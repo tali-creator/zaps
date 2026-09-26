@@ -214,9 +214,6 @@ pub fn yield_routes_with_state(state: r#yield::YieldState) -> Router {
         .route("/withdraw", post(r#yield::withdraw))
         .route("/toggle-auto", post(r#yield::toggle_auto_earn))
         // #549 — Unsigned Transaction XDR Generator
-        // These routes construct unsigned Soroban transaction envelopes for
-        // client-side signing without touching the database.
-        .route("/build/deposit", post(r#yield::build_unsigned_deposit))
-        .route("/build/withdraw", post(r#yield::build_unsigned_withdraw))
-        .with_state(state)
-}
+        // These rout
+
+/* … truncated 293 chars — edit only what you need near the top … */
