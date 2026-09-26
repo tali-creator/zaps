@@ -78,6 +78,9 @@ CREATE INDEX IF NOT EXISTS idx_users_privy_did ON users(privy_did) WHERE privy_d
 -- Username registry (#541): case-insensitive uniqueness + prefix search
 CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_lower ON users(LOWER(username));
 CREATE INDEX IF NOT EXISTS idx_users_username_lower_pattern ON users(LOWER(username) text_pattern_ops);
+-- Username mappings (#923): DB-level uniqueness + fast lowercase lookup
+CREATE UNIQUE INDEX IF NOT EXISTS idx_users_username_unique ON users(username);
+CREATE INDEX IF NOT EXISTS idx_users_username_lower_lookup ON users(LOWER(username));
 CREATE INDEX IF NOT EXISTS idx_bridge_tx_status ON bridge_transactions(status);
 CREATE INDEX IF NOT EXISTS idx_bridge_tx_created_at ON bridge_transactions(created_at DESC);
 
@@ -166,60 +169,6 @@ CREATE TABLE IF NOT EXISTS batch_recipients (
     destination_address VARCHAR(56),
     amount BIGINT NOT NULL CHECK (amount > 0),
     status VARCHAR(20) NOT NULL DEFAULT 'PENDING'
-        CHECK (status IN ('PENDING', 'SUBMITTED', 'CONFIRMED', 'FAILED')),
-    sdp_payment_id VARCHAR(128),
-    tx_hash VARCHAR(64),
-    attempt_count INTEGER NOT NULL DEFAULT 0 CHECK (attempt_count >= 0),
-    last_error TEXT,
-    locked_at TIMESTAMP, -- worker lease; lets a peer reclaim rows from a dead process
-    locked_by VARCHAR(64),
-    created_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    updated_at TIMESTAMP NOT NULL DEFAULT NOW(),
-    CONSTRAINT batch_recipients_has_destination
-        CHECK (user_id IS NOT NULL OR destination_address IS NOT NULL)
-);
+        CHECK (s
 
-CREATE TABLE IF NOT EXISTS dispatch_logs (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    batch_id UUID NOT NULL REFERENCES payout_batches(id) ON DELETE CASCADE,
-    recipient_id UUID REFERENCES batch_recipients(id) ON DELETE CASCADE, -- NULL for batch-level events
-    attempt INTEGER NOT NULL DEFAULT 1 CHECK (attempt >= 1),
-    event VARCHAR(30) NOT NULL
-        CHECK (event IN ('CLAIMED', 'SUBMITTED', 'CONFIRMED', 'FAILED', 'RETRY_SCHEDULED', 'CANCELLED')),
-    sdp_response_code VARCHAR(20),
-    detail TEXT,
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
--- Indexes
--- Duplicate-payout guards: a retried batch submission is rejected by the
--- database rather than silently paying a recipient twice.
-CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_recipients_unique_user
-    ON batch_recipients(batch_id, user_id) WHERE user_id IS NOT NULL;
-CREATE UNIQUE INDEX IF NOT EXISTS idx_batch_recipients_unique_address
-    ON batch_recipients(batch_id, destination_address) WHERE destination_address IS NOT NULL;
-
-CREATE INDEX IF NOT EXISTS idx_payout_batches_status_created ON payout_batches(status, created_at);
-CREATE INDEX IF NOT EXISTS idx_payout_batches_created_by ON payout_batches(created_by);
--- Partial, so the worker's hot path index shrinks as rows reach terminal status.
-CREATE INDEX IF NOT EXISTS idx_batch_recipients_pending
-    ON batch_recipients(batch_id, created_at) WHERE status = 'PENDING';
-CREATE INDEX IF NOT EXISTS idx_batch_recipients_batch_status ON batch_recipients(batch_id, status);
-CREATE INDEX IF NOT EXISTS idx_batch_recipients_locked
-    ON batch_recipients(locked_at) WHERE locked_at IS NOT NULL;
-CREATE INDEX IF NOT EXISTS idx_dispatch_logs_batch ON dispatch_logs(batch_id, created_at DESC);
-CREATE INDEX IF NOT EXISTS idx_dispatch_logs_recipient
-    ON dispatch_logs(recipient_id, created_at DESC) WHERE recipient_id IS NOT NULL;
-
--- #806: Dead-letter queue for permanently failing push/webhook dispatches.
-CREATE TABLE IF NOT EXISTS failed_webhook_dlq (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
-    destination TEXT NOT NULL,
-    payload JSONB NOT NULL,
-    error_message TEXT NOT NULL,
-    retry_count INTEGER NOT NULL DEFAULT 5 CHECK (retry_count >= 0),
-    created_at TIMESTAMP NOT NULL DEFAULT NOW()
-);
-
-CREATE INDEX IF NOT EXISTS idx_failed_webhook_dlq_created_at
-    ON failed_webhook_dlq(created_at DESC);
+/* … truncated 2914 chars — edit only what you need near the top … */

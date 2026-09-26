@@ -1,4 +1,4 @@
--- #541: index username mappings and enforce DB-level registration uniqueness.
+-- #923: index username mappings and enforce DB-level registration uniqueness.
 
 -- users.username already carries a plain UNIQUE constraint, but that constraint
 -- is case-sensitive: `Ebube` and `ebube` can both register and then resolve to

@@ -1,4 +1,4 @@
--- Rollback for 20260729000001_username_indices.sql (#541).
+-- Rollback for 20260729000001_username_indices.sql (#923).
 --
 -- Non-destructive: these are indices only, no user data is touched. Dropping
 -- idx_users_username_lower gives up case-insensitive registration uniqueness,
