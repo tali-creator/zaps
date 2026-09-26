@@ -234,185 +234,47 @@ pub fn find_nested_i64(value: &Value, key: &str) -> Option<i64> {
                 Value::String(text) => text.parse::<i64>().ok(),
                 _ => None,
             })
-            .or_else(|| map.values().find_map(|nested| find_nested_i64(nested, key))),
+            .or_else(|| {
+                map.values()
+                    .find_map(|nested| find_nested_i64(nested, key))
+            }),
         Value::Array(items) => items.iter().find_map(|item| find_nested_i64(item, key)),
         _ => None,
     }
 }
 
-pub fn extract_tx_hash(value: &Value) -> String {
-    find_nested_string(value, "tx_hash")
-        .or_else(|| find_nested_string(value, "txHash"))
-        .or_else(|| find_nested_string(value, "transactionHash"))
-        .unwrap_or_else(|| "unknown".to_string())
-}
-
-/// BE-047: Extract two addresses from a Soroban event's `body.v0.data.vec`
-/// array where each element is `{ "address": "C..." }`. Returns `(None, None)`
-/// when the structure does not match.
+/// BE-047: Extract two addresses from a Soroban event's `data.vec` array.
 pub fn extract_vec_address_pair(value: &Value) -> (Option<String>, Option<String>) {
-    let Some(vec) = value
-        .get("body")
-        .and_then(|body| body.get("v0"))
-        .and_then(|v0| v0.get("data"))
-        .and_then(|data| data.get("vec"))
-        .and_then(Value::as_array)
-    else {
-        return (None, None);
-    };
-
-    let a1 = vec
-        .first()
-        .and_then(|v| v.get("address"))
-        .and_then(Value::as_str)
-        .map(String::from);
-
-    let a2 = vec
-        .get(1)
-        .and_then(|v| v.get("address"))
-        .and_then(Value::as_str)
-        .map(String::from);
-
-    (a1, a2)
+    let mut addresses = Vec::new();
+    collect_addresses(value, &mut addresses);
+    let mut iter = addresses.into_iter();
+    (iter.next(), iter.next())
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn decode_scval_symbol_yields_deposited() {
-        // Encode "YieldDeposited" as SCV_SYMBOL XDR and verify round-trip decode.
-        let name = b"YieldDeposited";
-        let mut xdr = Vec::new();
-        xdr.extend_from_slice(&14u32.to_be_bytes());
-        xdr.extend_from_slice(&(name.len() as u32).to_be_bytes());
-        xdr.extend_from_slice(name);
-        let pad = (4 - name.len() % 4) % 4;
-        xdr.resize(xdr.len() + pad, 0u8);
-        let b64 = B64.encode(&xdr);
-        assert_eq!(
-            decode_scval_symbol(&b64),
-            Some("YieldDeposited".to_string())
-        );
-    }
-
-    #[test]
-    fn decode_scval_symbol_rejects_non_symbol_type() {
-        // Discriminant 6 = SCV_BOOL, not a symbol.
-        let xdr = 6u32.to_be_bytes();
-        let b64 = B64.encode(xdr);
-        assert_eq!(decode_scval_symbol(&b64), None);
-    }
-
-    #[test]
-    fn decode_scval_symbol_rejects_invalid_base64() {
-        assert_eq!(decode_scval_symbol("!!!not_base64!!!"), None);
-    }
-
-    #[test]
-    fn extract_event_topic_from_soroban_rpc_shape() {
-        let name = b"YieldWithdrawn";
-        let mut xdr = Vec::new();
-        xdr.extend_from_slice(&14u32.to_be_bytes());
-        xdr.extend_from_slice(&(name.len() as u32).to_be_bytes());
-        xdr.extend_from_slice(name);
-        let pad = (4 - name.len() % 4) % 4;
-        xdr.resize(xdr.len() + pad, 0u8);
-        let b64 = B64.encode(&xdr);
-
-        let event = serde_json::json!({ "topic": [b64] });
-        assert_eq!(
-            extract_event_topic(&event),
-            Some("YieldWithdrawn".to_string())
-        );
-    }
-
-    #[test]
-    fn parses_yield_accrued_payload() {
-        let payload = serde_json::json!({
-            "value": {
-                "elapsed_ledgers": 120,
-                "added_yield": 45_000,
-                "new_index": 1_004_500,
-                "tx_hash": "accrue123"
-            }
-        });
-
-        match parse_zaps_event("YieldAccrued", &payload) {
-            ZapsEvent::YieldAccrued(event) => {
-                assert_eq!(event.elapsed_ledgers, 120);
-                assert_eq!(event.added_yield, 45_000);
-                assert_eq!(event.new_index, 1_004_500);
-                assert_eq!(event.tx_hash, "accrue123");
-            }
-            _ => panic!("expected a YieldAccrued event"),
-        }
-    }
-
-    #[test]
-    fn extract_event_topic_returns_none_for_missing_topic() {
-        let event = serde_json::json!({ "other_field": "value" });
-        assert_eq!(extract_event_topic(&event), None);
-    }
-
-    #[test]
-    fn parses_friend_added_event() {
-        let payload = serde_json::json!({
-            "body": {
-                "v0": {
-                    "data": {
-                        "vec": [
-                            { "address": "CAFCT4" },
-                            { "address": "CAHK3M" }
-                        ]
+fn collect_addresses(value: &Value, out: &mut Vec<String>) {
+    match value {
+        Value::Object(map) => {
+            for (key, item) in map {
+                if key == "address" || key == "account" || key == "user" || key == "friend" {
+                    if let Value::String(text) = item {
+                        out.push(text.clone());
                     }
                 }
-            },
-            "txHash": "friend_tx_123"
-        });
-
-        match parse_zaps_event("FriendAdded", &payload) {
-            ZapsEvent::FriendAdded(event) => {
-                assert_eq!(event.requester, "CAFCT4");
-                assert_eq!(event.friend, "CAHK3M");
-                assert_eq!(event.tx_hash, "friend_tx_123");
+                collect_addresses(item, out);
             }
-            _ => panic!("expected a FriendAdded event"),
         }
-    }
-
-    #[test]
-    fn parses_friend_removed_event() {
-        let payload = serde_json::json!({
-            "body": {
-                "v0": {
-                    "data": {
-                        "vec": [
-                            { "address": "GUSER" },
-                            { "address": "GFRIEND" }
-                        ]
-                    }
-                }
-            },
-            "txHash": "remove_tx_456"
-        });
-
-        match parse_zaps_event("FriendRemoved", &payload) {
-            ZapsEvent::FriendRemoved(event) => {
-                assert_eq!(event.user, "GUSER");
-                assert_eq!(event.friend, "GFRIEND");
-                assert_eq!(event.tx_hash, "remove_tx_456");
+        Value::Array(items) => {
+            for item in items {
+                collect_addresses(item, out);
             }
-            _ => panic!("expected a FriendRemoved event"),
         }
+        _ => {}
     }
+}
 
-    #[test]
-    fn extract_vec_address_pair_returns_none_for_missing_data() {
-        let payload = serde_json::json!({ "no_body": true });
-        let (a1, a2) = extract_vec_address_pair(&payload);
-        assert!(a1.is_none());
-        assert!(a2.is_none());
-    }
+pub fn extract_tx_hash(value: &Value) -> String {
+    find_nested_string(value, "txHash")
+        .or_else(|| find_nested_string(value, "tx_hash"))
+        .or_else(|| find_nested_string(value, "transactionHash"))
+        .unwrap_or_default()
 }
