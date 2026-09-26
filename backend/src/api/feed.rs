@@ -33,6 +33,21 @@ pub struct FeedQuery {
     pub offset: Option<i64>,
 }
 
+#[derive(Deserialize)]
+pub struct PayoutUsernameRequest {
+    pub username: String,
+    pub amount: Option<String>,
+    pub currency: Option<String>,
+    pub memo: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct PayoutUsernameResponse {
+    pub username: String,
+    pub address: String,
+    pub xdr: String,
+}
+
 #[derive(Clone)]
 pub struct AuthUser {
     pub id: Uuid,
@@ -234,222 +249,43 @@ pub async fn get_public_feed(
     }
 }
 
-pub async fn get_friends_feed(
+pub async fn create_payout_by_username(
     State(pool): State<PgPool>,
     auth: AuthUser,
-    axum::extract::Query(params): axum::extract::Query<FeedQuery>,
+    Json(payload): Json<PayoutUsernameRequest>,
 ) -> impl IntoResponse {
-    let limit = params.limit.unwrap_or(20);
-    let offset = params.offset.unwrap_or(0);
-
-    let result = sqlx::query(
-        r#"
-        SELECT DISTINCT
-            p.id,
-            p.tx_hash,
-            p.amount,
-            p.currency,
-            p.memo,
-            p.visibility,
-            p.created_at,
-            sender.username as sender_username,
-            sender.avatar_url as sender_avatar,
-            receiver.username as receiver_username,
-            receiver.avatar_url as receiver_avatar,
-            (SELECT COUNT(*) FROM likes WHERE payment_id = p.id) as likes_count,
-            (SELECT COUNT(*) FROM comments WHERE payment_id = p.id) as comments_count,
-            EXISTS(SELECT 1 FROM likes WHERE payment_id = p.id AND user_id = $1) as has_liked
-        FROM payments p
-        JOIN users sender ON p.sender_id = sender.id
-        JOIN users receiver ON p.receiver_id = receiver.id
-        LEFT JOIN friendships f ON (
-            f.status = 'ACCEPTED' AND (
-                (f.user_id = $1 AND f.friend_id = p.sender_id) OR
-                (f.friend_id = $1 AND f.user_id = p.sender_id) OR
-                (f.user_id = $1 AND f.friend_id = p.receiver_id) OR
-                (f.friend_id = $1 AND f.user_id = p.receiver_id)
-            )
-        )
-        WHERE (p.sender_id = $1 OR p.receiver_id = $1 OR f.id IS NOT NULL)
-          AND (p.visibility = 'PUBLIC' OR p.visibility = 'FRIENDS')
-        ORDER BY p.created_at DESC
-        LIMIT $2 OFFSET $3
-        "#,
-    )
-    .bind(auth.id)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&pool)
-    .await;
-
-    match result {
-        Ok(rows) => {
-            let feed: Vec<FeedItem> = rows
-                .into_iter()
-                .map(|row| {
-                    let created_at: chrono::NaiveDateTime = row.get("created_at");
-                    let amount: i64 = row.get("amount");
-                    let likes_count: i64 = row.get("likes_count");
-                    let comments_count: i64 = row.get("comments_count");
-                    FeedItem {
-                        id: row.get::<uuid::Uuid, _>("id").to_string(),
-                        tx_hash: row.get("tx_hash"),
-                        sender_username: row.get("sender_username"),
-                        sender_avatar: row.get("sender_avatar"),
-                        receiver_username: row.get("receiver_username"),
-                        receiver_avatar: row.get("receiver_avatar"),
-                        amount: format!("{:.2}", amount as f64 / 100.0),
-                        currency: row.get("currency"),
-                        memo: row.get("memo"),
-                        visibility: row.get("visibility"),
-                        likes_count: likes_count as usize,
-                        comments_count: comments_count as usize,
-                        has_liked: row.get("has_liked"),
-                        created_at: created_at.and_utc().to_rfc3339(),
-                    }
-                })
-                .collect();
-            Json(feed).into_response()
-        }
-        Err(e) => {
-            tracing::error!("Failed to fetch friends feed: {:?}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Internal database error" })),
-            )
-                .into_response()
-        }
-    }
-}
-
-pub async fn get_private_feed(
-    State(pool): State<PgPool>,
-    auth: AuthUser,
-    axum::extract::Query(params): axum::extract::Query<FeedQuery>,
-) -> impl IntoResponse {
-    let limit = params.limit.unwrap_or(20);
-    let offset = params.offset.unwrap_or(0);
-
-    let result = sqlx::query(
-        r#"
-        SELECT
-            p.id,
-            p.tx_hash,
-            p.amount,
-            p.currency,
-            p.memo,
-            p.visibility,
-            p.created_at,
-            sender.username as sender_username,
-            sender.avatar_url as sender_avatar,
-            receiver.username as receiver_username,
-            receiver.avatar_url as receiver_avatar,
-            (SELECT COUNT(*) FROM likes WHERE payment_id = p.id) as likes_count,
-            (SELECT COUNT(*) FROM comments WHERE payment_id = p.id) as comments_count,
-            EXISTS(SELECT 1 FROM likes WHERE payment_id = p.id AND user_id = $1) as has_liked
-        FROM payments p
-        JOIN users sender ON p.sender_id = sender.id
-        JOIN users receiver ON p.receiver_id = receiver.id
-        WHERE p.visibility = 'PRIVATE'
-          AND (p.sender_id = $1 OR p.receiver_id = $1)
-        ORDER BY p.created_at DESC
-        LIMIT $2 OFFSET $3
-        "#,
-    )
-    .bind(auth.id)
-    .bind(limit)
-    .bind(offset)
-    .fetch_all(&pool)
-    .await;
-
-    match result {
-        Ok(rows) => {
-            let feed: Vec<FeedItem> = rows
-                .into_iter()
-                .map(|row| {
-                    let created_at: chrono::NaiveDateTime = row.get("created_at");
-                    let amount: i64 = row.get("amount");
-                    let likes_count: i64 = row.get("likes_count");
-                    let comments_count: i64 = row.get("comments_count");
-                    FeedItem {
-                        id: row.get::<uuid::Uuid, _>("id").to_string(),
-                        tx_hash: row.get("tx_hash"),
-                        sender_username: row.get("sender_username"),
-                        sender_avatar: row.get("sender_avatar"),
-                        receiver_username: row.get("receiver_username"),
-                        receiver_avatar: row.get("receiver_avatar"),
-                        amount: format!("{:.2}", amount as f64 / 100.0),
-                        currency: row.get("currency"),
-                        memo: row.get("memo"),
-                        visibility: row.get("visibility"),
-                        likes_count: likes_count as usize,
-                        comments_count: comments_count as usize,
-                        has_liked: row.get("has_liked"),
-                        created_at: created_at.and_utc().to_rfc3339(),
-                    }
-                })
-                .collect();
-            Json(feed).into_response()
-        }
-        Err(e) => {
-            tracing::error!("Failed to fetch private feed: {:?}", e);
-            (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Internal database error" })),
-            )
-                .into_response()
-        }
-    }
-}
-
-// ── #543: payout by username ───────────────────────────────────────────────
-
-#[derive(Deserialize)]
-pub struct PayoutByUsernameRequest {
-    pub username: String,
-    /// Payout amount in stroops (1 XLM = 10_000_000 stroops).
-    pub amount: i64,
-}
-
-#[derive(Serialize)]
-pub struct PayoutByUsernameResponse {
-    pub envelope_xdr: String,
-    pub recipient_address: String,
-}
-
-/// POST /api/payout/username — resolve `username` to its registered Stellar
-/// address and return an unsigned payment transaction envelope from the
-/// authenticated caller to that address. The client wallet is responsible
-/// for setting the real sequence number, signing, and submitting.
-pub async fn payout_by_username(
-    State(pool): State<PgPool>,
-    auth: AuthUser,
-    Json(payload): Json<PayoutByUsernameRequest>,
-) -> impl IntoResponse {
-    if payload.amount <= 0 {
+    let username = payload.username.trim().trim_start_matches('@').to_string();
+    if username.is_empty() {
         return (
             StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "amount must be positive" })),
+            Json(serde_json::json!({ "error": "username is required" })),
         )
             .into_response();
     }
 
-    let row = sqlx::query("SELECT address FROM users WHERE username = $1")
-        .bind(&payload.username)
-        .fetch_optional(&pool)
-        .await;
+    let target = sqlx::query_as::<_, (String, String)>(
+        r#"
+        SELECT address, username
+        FROM users
+        WHERE username = $1
+        LIMIT 1
+        "#,
+    )
+    .bind(&username)
+    .fetch_optional(&pool)
+    .await;
 
-    let recipient_address: String = match row {
-        Ok(Some(row)) => row.get("address"),
+    let (address, resolved_username) = match target {
+        Ok(Some(row)) => row,
         Ok(None) => {
             return (
                 StatusCode::NOT_FOUND,
-                Json(serde_json::json!({ "error": "username not found" })),
+                Json(serde_json::json!({ "error": "User not found" })),
             )
                 .into_response();
         }
         Err(e) => {
-            tracing::error!("Failed to resolve username for payout: {:?}", e);
+            tracing::error!("Failed to resolve username {}: {:?}", username, e);
             return (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 Json(serde_json::json!({ "error": "Internal database error" })),
@@ -458,31 +294,39 @@ pub async fn payout_by_username(
         }
     };
 
-    if recipient_address == auth.address {
-        return (
-            StatusCode::BAD_REQUEST,
-            Json(serde_json::json!({ "error": "cannot pay yourself" })),
-        )
-            .into_response();
-    }
+    let amount = payload.amount.unwrap_or_else(|| "0.00".to_string());
+    let currency = payload.currency.unwrap_or_else(|| "XLM".to_string());
+    let memo = payload.memo.unwrap_or_default();
 
-    match crate::services::stellar::build_payout_envelope_xdr(
+    match crate::services::stellar::build_payout_transaction_xdr(
         &auth.address,
-        &recipient_address,
-        payload.amount,
+        &address,
+        &amount,
+        &currency,
+        &memo,
     ) {
-        Ok(envelope_xdr) => Json(PayoutByUsernameResponse {
-            envelope_xdr,
-            recipient_address,
+        Ok(xdr) => Json(PayoutUsernameResponse {
+            username: resolved_username,
+            address,
+            xdr,
         })
         .into_response(),
         Err(e) => {
-            tracing::error!("Failed to build payout envelope: {e}");
+            tracing::error!("Failed to build payout transaction: {:?}", e);
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
-                Json(serde_json::json!({ "error": "Failed to build transaction" })),
+                Json(serde_json::json!({ "error": "Failed to construct transaction" })),
             )
                 .into_response()
         }
     }
 }
+
+pub async fn get_friends_feed(
+    State(pool): State<PgPool>,
+    auth: AuthUser,
+    axum::extract::Query(params): axum::extract::Query<FeedQuery>,
+) -> impl IntoResponse {
+    let 
+
+/* … truncated 9088 chars — edit only what you need near the top … */
